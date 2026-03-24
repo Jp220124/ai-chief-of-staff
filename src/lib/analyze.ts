@@ -30,7 +30,7 @@ export async function analyzeMessages(
   console.log(`Pass 1 complete: ${pass1.tokens} tokens`);
 
   // ---- PASS 2: Cross-Reference ----
-  let pass2Messages: Record<number, Partial<TriagedMessage>> = {};
+  const pass2Messages: Record<number, Partial<TriagedMessage>> = {};
   let pass2Tokens = 0;
   let pass2Result;
   try {
@@ -59,7 +59,7 @@ export async function analyzeMessages(
   }
 
   // ---- PASS 3: Generate Outputs ----
-  let pass3Result: { messages?: unknown[]; flags?: unknown[]; briefing?: unknown[] } = {};
+  let pass3Result: Record<string, unknown> = {};
   let pass3Tokens = 0;
   try {
     const pass3 = await callClaude(
@@ -74,7 +74,7 @@ export async function analyzeMessages(
   } catch (error) {
     console.error("Pass 3 failed:", error);
     warnings.push("Draft responses and briefing generation failed.");
-    pass3Result = { messages: [], draft_responses: [], flags: [], briefing: [] };
+    pass3Result = { messages: [], flags: [], briefing: [] };
   }
 
   const totalTime = Date.now() - startTime;
@@ -121,7 +121,8 @@ export async function analyzeMessages(
       deadline: (p3.deadline || p2.deadline) as string | undefined,
       urgency: (p3.urgency || p2.urgency || "medium") as TriagedMessage["urgency"],
       superseded_by: (p3.superseded_by ?? p2.superseded_by ?? undefined) as number | undefined,
-      delegate_to: (p3.delegate_to || p2.delegate_to) as string | undefined,
+      // Extract delegate_to from draft_response if not set explicitly
+      delegate_to: (p3.delegate_to || p2.delegate_to || extractDelegateName(p3.draft_response as string || "")) as string | undefined,
     };
   });
 
@@ -132,8 +133,20 @@ export async function analyzeMessages(
   // Briefing can be array or object with red/amber/green keys
   const rawBriefing = (pass3Result as Record<string, unknown>).briefing || (pass3Result as Record<string, unknown>).daily_briefing || [];
   let normalizedBriefing: unknown[];
+  const defaultTitles: Record<string, string> = {
+    red: "Requires Immediate Decision",
+    amber: "Needs Attention Today",
+    green: "Handled & Delegated",
+  };
   if (Array.isArray(rawBriefing)) {
-    normalizedBriefing = rawBriefing;
+    // Ensure each section has a title
+    normalizedBriefing = rawBriefing.map((b: unknown) => {
+      const section = b as Record<string, unknown>;
+      return {
+        ...section,
+        title: section.title || defaultTitles[section.level as string] || "Updates",
+      };
+    });
   } else if (typeof rawBriefing === 'object' && rawBriefing !== null) {
     // Convert object format {red: {...}, amber: {...}, green: {...}} to array
     const briefObj = rawBriefing as Record<string, unknown>;
@@ -165,6 +178,12 @@ export async function analyzeMessages(
     },
     warnings: warnings.length > 0 ? warnings : undefined,
   };
+}
+
+function extractDelegateName(draft: string): string | undefined {
+  // Extract "Delegate to Name (Role)" from draft response text
+  const match = draft.match(/[Dd]elegate to ([A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+)*(?:\s*\([^)]+\))?)/);
+  return match ? match[1] : undefined;
 }
 
 async function callClaude(
